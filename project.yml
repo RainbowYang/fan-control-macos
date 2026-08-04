@@ -1,0 +1,29 @@
+name: FanControl
+options:
+  bundleIdPrefix: local.fancontrol
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_IDENTITY: "-"            # adhoc 自签，无开发者账号
+    CODE_SIGNING_REQUIRED: NO
+    ENABLE_HARDENED_RUNTIME: NO
+targets:
+  FanControl:
+    type: application
+    platform: macOS
+    sources:
+      - path: FanControl
+    settings:
+      base:
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        PRODUCT_BUNDLE_IDENTIFIER: local.fancontrol.app
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES          # 菜单栏 app，不占 Dock
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+    scheme:
+      testTargets: []

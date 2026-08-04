@@ -1,0 +1,17 @@
+# Build artifacts
+.build/
+DerivedData/
+
+# Xcode 用户数据（生成的 xcodeproj 是否入库另有决策）
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# smctl 第三方预编译二进制（体积 9MB，可各自下载）
+vendor/smctl/smctl
+vendor/smctl/smctld
+
+# 临时
+*.toml.bak
