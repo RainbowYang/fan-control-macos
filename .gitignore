@@ -14,9 +14,9 @@ xcuserdata/
 vendor/smctl/smctl
 vendor/smctl/smctld
 
-# 本地环境
-.claude/settings.local.json   # Claude Code 本地权限配置，不入库
-ROUTE.md                       # 本项目工作日志，不入库
+# 本地环境：Claude Code 本地权限配置不入库、工作日志不入库
+.claude/settings.local.json
+ROUTE.md
 
 # 发布产物（dmg 走 GitHub Release 分发，不入源码仓库）
 dist/
