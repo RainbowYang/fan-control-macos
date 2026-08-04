@@ -40,3 +40,8 @@ cp vendor/smctl/smctl vendor/smctl/smctld .build/Build/Products/Debug/FanControl
 - **CLI 中转**：SwiftUI app 通过 `Process` 调用 `smctl` CLI 二进制 → XPC → smctld → AppleSMC
   - 绕过 smctl XPC 的 Team ID 签名鉴权约束（无 Apple Developer 账号也能用）
 - 详见 `ROUTE.md`
+
+## 许可证
+- 本项目：**MIT**（见 [LICENSE](LICENSE)），Copyright © 2026 RainbowYang
+- 底层 [smctl](https://github.com/leaperone/smctl)（含 smctld）同为 **MIT**，版权归其原作者。`vendor/smctl/LICENSE` 保留其完整许可声明。
+- 打包产物 `.dmg` 内含 smctl/smctld，按 MIT 条款随副本保留上述声明。
