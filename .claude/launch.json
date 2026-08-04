@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fancontrol",
+      "runtimeExecutable": "/Users/rainbow/fan-control-macos/.build/Build/Products/Debug/FanControl.app/Contents/MacOS/FanControl",
+      "runtimeArgs": [],
+      "port": 1
+    }
+  ]
+}

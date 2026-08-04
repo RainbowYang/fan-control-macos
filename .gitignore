@@ -1,17 +1,25 @@
-# Build artifacts
+# Build artifacts（xcodegen 产物，克隆后跑 xcodegen generate 重建）
 .build/
 DerivedData/
+FanControl.xcodeproj/
 
-# Xcode 用户数据（生成的 xcodeproj 是否入库另有决策）
+# Xcode 用户数据
 xcuserdata/
 *.xcuserstate
 
 # macOS
 .DS_Store
 
-# smctl 第三方预编译二进制（体积 9MB，可各自下载）
+# smctl 第三方预编译二进制（体积 9MB，已打包进 dmg release）
 vendor/smctl/smctl
 vendor/smctl/smctld
+
+# 本地环境
+.claude/settings.local.json   # Claude Code 本地权限配置，不入库
+ROUTE.md                       # 本项目工作日志，不入库
+
+# 发布产物（dmg 走 GitHub Release 分发，不入源码仓库）
+dist/
 
 # 临时
 *.toml.bak
