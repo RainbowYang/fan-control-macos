@@ -134,6 +134,58 @@ final class FanService: ObservableObject {
         return success
     }
 
+    // MARK: - 目标温度闭环控制
+
+    /// 当前生效的目标温度（nil = 未启用，系统自动控制）
+    @Published private(set) var currentTargetTemp: Int?
+
+    /// 设定目标温度：把「目标温度→风扇」曲线写入 config.toml 并激活。
+    /// daemon 会按该温度每秒自动调速，把温度压回设定值（系统级持续，app 退出也生效）。
+    func applyTargetTemp(_ t: Int) async throws {
+        let bin = try resolvedBin()
+        let curveName = "target-\(t)"
+
+        // 1. 生成完整新 config：基于现有 config，剔除旧的 target-* 曲线，复用其它段
+        let existing = await promptAdminOutput("cat /etc/smctl/config.toml") ?? ""
+        let newConfig = ConfigBuilder.builtConfig(existing: existing,
+                                                  curveName: curveName,
+                                                  points: targetCurvePoints(target: t))
+
+        // 2. 写临时文件（用户可写）
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smctl-config-\(UUID().uuidString).toml")
+        try newConfig.write(to: tempURL, atomically: true, encoding: .utf8)
+
+        // 3. 用 admin 权限：确保目录 → 覆盖写 config → 重启 daemon 重载
+        _ = try await promptAdmin("mkdir -p /etc/smctl")
+        _ = try await promptAdmin("cp \"\(tempURL.path)\" /etc/smctl/config.toml")
+        try? FileManager.default.removeItem(at: tempURL)
+        _ = try await promptAdmin("\(bin) daemon restart")
+
+        // 4. 激活曲线（该命令落盘 + 立即生效）
+        _ = try await promptAdmin("\(bin) fan profile \(curveName)")
+
+        await MainActor.run { currentTargetTemp = t }
+    }
+
+    /// 交还系统自动控制。
+    func revertTargetTemp() async throws {
+        let bin = try resolvedBin()
+        _ = try await promptAdmin("\(bin) fan profile auto")
+        await MainActor.run { currentTargetTemp = nil }
+    }
+
+    /// 生成「目标温度→风扇」曲线的 points。
+    /// 在目标温度附近用陡段提前干预，确保压住温升；最高点压向护栏(108°C)前。
+    private func targetCurvePoints(target: Int) -> String {
+        // 注意 TOML 数字必须浮点格式（smctl issue #9：整数会解析失败）
+        // 温度升到 target 偏下就开始拉转速，target 附近陡升，超过 target 逼近 max
+        let lo = target - 10
+        let mid = target - 3
+        let upper = min(target + 8, 105)
+        return "[[50, 1200.0], [\(lo), 1500.0], [\(mid), 3200.0], [\(target), 4300.0], [\(upper), 5400.0], [108, \"max\"]]"
+    }
+
     // MARK: - AppleScript 管理员授权
 
     /// 通过 osascript 以管理员权限执行一条命令（弹一次性系统密码框）。
@@ -144,6 +196,20 @@ final class FanService: ObservableObject {
         let script = "do shell script \"\(escaped)\" with administrator privileges"
         let result = try await execAsync(path: "/usr/bin/osascript", args: ["-e", script])
         return result.terminatedCleanly
+    }
+
+    /// promptAdmin 的变体：额外捕获 stdout（如 `cat` 命令的结果）。失败返回 nil。
+    private func promptAdminOutput(_ command: String) async -> String? {
+        do {
+            let escaped = command
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            let script = "do shell script \"\(escaped)\" with administrator privileges"
+            let result = try await execAsync(path: "/usr/bin/osascript", args: ["-e", script])
+            return result.terminatedCleanly ? result.stdout : nil
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - 底层执行
@@ -205,5 +271,73 @@ final class FanService: ObservableObject {
                 terminatedCleanly: process.terminationStatus == 0
             )
         }.value
+    }
+}
+
+/// 重建 /etc/smctl/config.toml：在保持其它配置段不变的前提下，
+/// 移除旧的 target-* 曲线并写入新曲线。用逐行/顶层段解析，避免复杂正则出错。
+enum ConfigBuilder {
+    /// 本机 CPU 热点 key（实测），作曲线输入。daemon 取这组里的最高温度。
+    private static let sensorKeys = ["Tp0E", "Tp02", "Tp06", "Tp0M"]
+
+    static func builtConfig(existing: String, curveName: String, points: String) -> String {
+        // 1. 按顶层 section 切块：[fan]、[[fan.curves]、[safety] 由我们重建，其余原样保留
+        var keepLines: [String] = []
+        var inFan = false
+        var inCurveOrSafety = false
+
+        let lines = existing.components(separatedBy: "\n")
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[[fan.curves]]") {
+                inCurveOrSafety = true
+                continue                       // 跳过所有旧曲线
+            } else if trimmed.hasPrefix("[fan]") {
+                inFan = true
+                inCurveOrSafety = false
+                continue                       // [fan] 段整体重建，跳过
+            } else if trimmed.hasPrefix("[safety]") {
+                inCurveOrSafety = true
+                continue                       // safety 段我们也重建，跳过旧的
+            } else if trimmed.hasPrefix("[") {
+                // 其它顶层段（battery / update / sentry ...）正常保留
+                inFan = false
+                inCurveOrSafety = false
+                keepLines.append(line)
+                continue
+            }
+            // 在 fan/curve/safety 块内的行全部丢弃（整段重建）
+            if inFan || inCurveOrSafety { continue }
+            keepLines.append(line)
+        }
+
+        let existingConfig = keepLines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 2. 组装新 config
+        let curve = """
+        [fan]
+        profile = "auto"
+
+        [[fan.curves]]
+        name = "\(curveName)"
+        sensors = \(tomlArray(sensorKeys))
+        points = \(points)
+        hysteresis = 3.0
+        slew_rate = 600.0
+        fall_slew_rate = 300.0
+
+        [safety]
+        temp_ceiling = 100.0
+        allow_below_minimum = false
+        """
+
+        return existingConfig.isEmpty
+            ? curve
+            : existingConfig + "\n\n" + curve
+    }
+
+    private static func tomlArray(_ items: [String]) -> String {
+        "[" + items.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
     }
 }

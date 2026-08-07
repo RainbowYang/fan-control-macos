@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var service: FanService
     @State private var feedbackMessage: String?
+    @State private var targetTemp: Double = 75
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -141,6 +142,62 @@ struct MenuBarView: View {
                     .font(.caption)
                     .foregroundStyle(feedback.hasPrefix("❌") ? Color.red : Color.secondary)
                     .frame(maxWidth: .infinity)
+            }
+
+            Divider()
+
+            // 目标温度闭环控制
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("目标温度").font(.headline)
+                    Spacer()
+                    if let active = service.currentTargetTemp {
+                        Label("控温 \(active)°C", systemImage: "target")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("系统自动", systemImage: "checkmark.circle")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Text("\(Int(targetTemp))°C")
+                        .font(.callout.monospacedDigit())
+                        .frame(width: 44, alignment: .leading)
+                    Slider(value: $targetTemp, in: 60...90, step: 5)
+                        .disabled(service.currentTargetTemp != nil)
+                    Button(service.currentTargetTemp == nil ? "启用" : "还原") {
+                        Task { await toggleTargetTemp() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Text("风扇将按设定目标自动调速，把温度压回该值以下（系统级，退出 app 也生效）")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func toggleTargetTemp() {
+        Task {
+            if service.currentTargetTemp != nil {
+                feedbackMessage = "⏳ 还原系统自动…"
+                do {
+                    try await service.revertTargetTemp()
+                    feedbackMessage = "已交还系统自动控制"
+                } catch {
+                    feedbackMessage = "❌ 还原失败: \(error.localizedDescription)"
+                }
+            } else {
+                let t = Int(targetTemp)
+                feedbackMessage = "⏳ 设置目标温度 \(t)°C…"
+                do {
+                    try await service.applyTargetTemp(t)
+                    feedbackMessage = "已启用控温 \(t)°C"
+                } catch {
+                    feedbackMessage = "❌ 启用失败: \(error.localizedDescription)"
+                }
             }
         }
     }
