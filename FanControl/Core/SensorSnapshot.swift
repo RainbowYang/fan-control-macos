@@ -37,24 +37,43 @@ struct SensorSnapshot: Codable {
     let fans: [FanStatus]
     let power: [PowerReading]?
 
-    /// 所有热点（Tp*）读数，按温度降序
-    var hotspots: [SensorReading] {
-        temperatures.filter { $0.isHotspot }.sorted { $0.celsius > $1.celsius }
-    }
-
-    /// CPU/GPU 等热点最高温度（用于菜单栏图标变色和展示）
-    var hottestHotspot: Double? {
-        hotspots.first?.celsius
-    }
-
     /// 所有传感器中的最高温
     var hottestOverall: Double? {
         temperatures.map(\.celsius).max()
     }
 
-    /// 计算给用户看的"热度"指标：优先热点最高温，否则整体最高温
+    // MARK: - 分组温度（按 SMC 组前缀区分物理位置/性质）
+
+    /// 某组前缀里温度最高的一项（组不存在返回 nil）。
+    private func hottest(inGroup prefix: String) -> Double? {
+        temperatures.filter { $0.key.hasPrefix(prefix) }.map(\.celsius).max()
+    }
+
+    /// CPU 硅片最高热点（Tp*）：真实 CPU 核心温度，散热/过热监控用，但非人摸到的表面。
+    var cpuDieTemp: Double? { hottest(inGroup: "Tp") }
+
+    /// 表面温度群（Ts*）：芯片附近封装表面，最接近「摸得到的外壳暖感」。
+    var surfaceTemp: Double? { hottest(inGroup: "Ts") }
+
+    /// 板面温度群（TC*）：板载热耦合点，贴近机身外壳。
+    var boardTemp: Double? { hottest(inGroup: "TC") }
+
+    /// GPU / 图形组（Tg*）。
+    var gpuTemp: Double? { hottest(inGroup: "Tg") }
+
+    /// 品牌"即时表面"探点（Ts0P）：部分机型直接暴露人体可感的表面温度。
+    var immediateSurfaceTemp: Double? {
+        temperatures.first { $0.key == "Ts0P" }?.celsius
+    }
+
+    /// 主温度（菜单栏大字 + 控温闭环输入）：采用「体感」—表面温度群最高值。
+    ///
+    /// 说明：人摸键盘/触控板感受到的是封装表面与外壳温度，而非 CPU 硅片 die
+    /// （die 常比表面高 ~20°C）。本 app 主展示与控温统一锚定表面温度，让
+    /// 「目标温度」就是「摸上去热不热」，不需要脑补换算。想查看真实 CPU 硅片
+    /// 温度见 `cpuDieTemp`。
     var effectiveTemp: Double {
-        hottestHotspot ?? hottestOverall ?? 0
+        surfaceTemp ?? immediateSurfaceTemp ?? hottestOverall ?? 0
     }
 
     /// 平均温度（视觉中线）

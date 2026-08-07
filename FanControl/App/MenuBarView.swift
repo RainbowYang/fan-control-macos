@@ -4,7 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var service: FanService
     @State private var feedbackMessage: String?
-    @State private var targetTemp: Double = 75
+    @State private var targetTemp: Double = 55
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -61,14 +61,24 @@ struct MenuBarView: View {
 
     private var tempsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("温度").font(.headline)
+            HStack {
+                Text("温度").font(.headline)
+                Spacer()
+                Text("主温度=表面体感").font(.caption2).foregroundStyle(.secondary)
+            }
             if let snapshot = service.snapshot {
-                let hotspots = snapshot.hotspots
-                if !hotspots.isEmpty {
-                    tempRow(label: "热点最高", value: hotspots.first?.celsius)
+                // 主温度大字已在顶部 header 显示；这里罗列不同位置的温度。
+                if let cpu = snapshot.cpuDieTemp {
+                    tempRow(label: "CPU 硅片", value: cpu, hint: "真实核心温度")
                 }
-                if let overall = snapshot.hottestOverall {
-                    tempRow(label: "全局最高", value: overall)
+                if let surf = snapshot.surfaceTemp {
+                    tempRow(label: "表面(体感)", value: surf)
+                }
+                if let board = snapshot.boardTemp {
+                    tempRow(label: "板面", value: board)
+                }
+                if let gpu = snapshot.gpuTemp {
+                    tempRow(label: "GPU", value: gpu)
                 }
                 if snapshot.temperatures.count > 0 {
                     tempRow(label: "平均", value: snapshot.averageTemp, format: true)
@@ -79,9 +89,12 @@ struct MenuBarView: View {
         }
     }
 
-    private func tempRow(label: String, value: Double?, format: Bool = false) -> some View {
+    private func tempRow(label: String, value: Double?, format: Bool = false, hint: String? = nil) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary)
+            if let hint {
+                Text(hint).font(.caption2).foregroundStyle(.tertiary)
+            }
             Spacer()
             if let value {
                 Text(format ? String(format: "%.1f°C", value) : "\(Int(value.rounded()))°C")
@@ -94,16 +107,21 @@ struct MenuBarView: View {
 
     private var fansSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("风扇").font(.headline)
+            HStack {
+                Text("风扇").font(.headline)
+                Spacer()
+                if let mode = service.snapshot?.fans.first?.mode {
+                    Text(mode.uppercased())
+                        .font(.caption2)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(mode == "auto" ? Color.green.opacity(0.2) : Color.orange.opacity(0.2)))
+                }
+            }
             if let fans = service.snapshot?.fans, !fans.isEmpty {
                 ForEach(fans, id: \.index) { fan in
                     HStack {
                         Text("风扇 \(fan.index + 1)").font(.caption).foregroundStyle(.secondary)
                         Spacer()
-                        Text(fan.mode.uppercased())
-                            .font(.caption2)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Capsule().fill(fan.mode == "auto" ? Color.green.opacity(0.2) : Color.orange.opacity(0.2)))
                         Text("\(Int(fan.actualRPM.rounded()))")
                             .font(.callout.monospacedDigit())
                         Text("/ \(Int((fan.targetRPM ?? fan.actualRPM).rounded()))")
@@ -123,16 +141,20 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("控制").font(.headline)
 
-            // 预设按钮（当前 profile 高亮；点击有反馈）
+            // 四种并列的工作模式：自动 / 静音 / 全速 / 控温（当前一项高亮）
             HStack(spacing: 6) {
-                presetButton("自动", icon: "arrow.clockwise", profile: "auto") {
+                presetButton("自动", icon: "arrow.clockwise", isActive: service.mode == .auto) {
                     try await service.revertToAuto()
                 }
-                presetButton("静音", icon: "speaker.wave.2", profile: "quiet") {
+                presetButton("静音", icon: "speaker.wave.2", isActive: service.mode == .quiet) {
                     try await service.setProfile("quiet")
                 }
-                presetButton("全速", icon: "speedometer", profile: "full") {
+                presetButton("全速", icon: "speedometer", isActive: service.mode == .full) {
                     try await service.setProfile("full")
+                }
+                presetButton("控温", icon: "target", isActive: service.mode.isTarget) {
+                    // 切换到控温模式：按下即用当前滑杆目标温度启动闭环。
+                    service.applyTargetTemp(Int(self.targetTemp))
                 }
             }
             .frame(maxWidth: .infinity)
@@ -144,60 +166,35 @@ struct MenuBarView: View {
                     .frame(maxWidth: .infinity)
             }
 
-            Divider()
-
-            // 目标温度闭环控制
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("目标温度").font(.headline)
-                    Spacer()
-                    if let active = service.currentTargetTemp {
-                        Label("控温 \(active)°C", systemImage: "target")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                    } else {
-                        Label("系统自动", systemImage: "checkmark.circle")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                HStack {
-                    Text("\(Int(targetTemp))°C")
-                        .font(.callout.monospacedDigit())
-                        .frame(width: 44, alignment: .leading)
-                    Slider(value: $targetTemp, in: 60...90, step: 5)
-                        .disabled(service.currentTargetTemp != nil)
-                    Button(service.currentTargetTemp == nil ? "启用" : "还原") {
-                        Task { await toggleTargetTemp() }
-                    }
-                    .buttonStyle(.bordered)
-                }
-                Text("风扇将按设定目标自动调速，把温度压回该值以下（系统级，退出 app 也生效）")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            // 仅在「控温」模式下才展开目标温度条；切到其它模式即折叠并停用控温。
+            if service.mode.isTarget {
+                Divider()
+                targetTempBar
             }
         }
     }
 
-    private func toggleTargetTemp() {
-        Task {
-            if service.currentTargetTemp != nil {
-                feedbackMessage = "⏳ 还原系统自动…"
-                do {
-                    try await service.revertTargetTemp()
-                    feedbackMessage = "已交还系统自动控制"
-                } catch {
-                    feedbackMessage = "❌ 还原失败: \(error.localizedDescription)"
+    /// 控温模式专属的温度条：滑杆即拖即用，拖动实时改变控温目标。
+    private var targetTempBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("目标温度").font(.headline)
+                Spacer()
+                if let active = service.currentTargetTemp {
+                    Label("控温 \(active)°C", systemImage: "target")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
                 }
-            } else {
-                let t = Int(targetTemp)
-                feedbackMessage = "⏳ 设置目标温度 \(t)°C…"
-                do {
-                    try await service.applyTargetTemp(t)
-                    feedbackMessage = "已启用控温 \(t)°C"
-                } catch {
-                    feedbackMessage = "❌ 启用失败: \(error.localizedDescription)"
-                }
+            }
+            HStack {
+                Text("\(Int(targetTemp))°C")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 44, alignment: .leading)
+                Slider(value: $targetTemp, in: 45...65, step: 1)
+                    .onChange(of: targetTemp) { newValue in
+                        // 拖动即启用/更新控温，无需确认按钮。
+                        service.applyTargetTemp(Int(newValue))
+                    }
             }
         }
     }
@@ -205,19 +202,17 @@ struct MenuBarView: View {
     private func presetButton(
         _ label: String,
         icon: String,
-        profile: String,
+        isActive: Bool,
         action: @escaping () async throws -> Void
     ) -> some View {
-        let isActive = (profile == currentProfile)
         let fg: Color = isActive ? .accentColor : .primary
         let bg: Color = isActive ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.05)
 
         return Button {
             Task {
-                feedbackMessage = "⏳ 正在切换…"
+                // 模式状态已由按钮高亮表达，成功不再弹文案；仅失败时提示。
                 do {
                     try await action()
-                    feedbackMessage = "已切到「\(label)」"
                 } catch {
                     feedbackMessage = "❌ 切换失败: \(error.localizedDescription)"
                 }
@@ -238,15 +233,6 @@ struct MenuBarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    /// 当前激活的 profile 标识：auto=系统自动；manual 时按目标转速高低判 quiet/full。
-    private var currentProfile: String {
-        guard let fan = service.snapshot?.fans.first else { return "auto" }
-        if fan.mode == "auto" { return "auto" }
-        let span = max(fan.maximumRPM - fan.minimumRPM, 1)
-        let ratio = (fan.targetRPM ?? fan.actualRPM) / span
-        return ratio > 0.6 ? "full" : "quiet"
     }
 
     private func installDaemon() {

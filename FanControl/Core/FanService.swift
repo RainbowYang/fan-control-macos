@@ -1,5 +1,19 @@
 import Foundation
 
+/// 风扇当前的四种互斥工作模式，UI 高亮与状态显示的唯一依据。
+enum FanMode: Equatable {
+    case auto      // 系统自动控制
+    case quiet     // 静音曲线
+    case full      // 全速
+    case target(Int)   // 目标温度闭环控温（到 N°C）
+
+    /// 是否为「目标温度控温」模式（用于 UI 展开温度条 / 判断是否已启用）。
+    var isTarget: Bool {
+        if case .target = self { return true }
+        return false
+    }
+}
+
 /// 封装 `smctl` CLI 的所有调用。单例，供 SwiftUI 各视图使用。
 final class FanService: ObservableObject {
 
@@ -114,6 +128,14 @@ final class FanService: ObservableObject {
     func setProfile(_ profile: String) async throws {
         let bin = try resolvedBin()
         _ = try await execSync(path: bin, args: ["fan", "profile", profile])
+        await MainActor.run {
+            stopTargetControlLoop()     // 切走模式时停掉闭环，避免两个模式打架
+            switch profile {
+            case "quiet": mode = .quiet
+            case "full": mode = .full
+            default: mode = .auto
+            }
+        }
     }
 
     /// 交还系统控制。必须用 `fan profile auto`（而非 `fan auto`）：
@@ -122,6 +144,10 @@ final class FanService: ObservableObject {
     func revertToAuto() async throws {
         let bin = try resolvedBin()
         _ = try await execSync(path: bin, args: ["fan", "profile", "auto"])
+        await MainActor.run {
+            stopTargetControlLoop()
+            mode = .auto
+        }
     }
 
     // MARK: - 安装
@@ -134,61 +160,110 @@ final class FanService: ObservableObject {
         return success
     }
 
-    // MARK: - 目标温度闭环控制
+    // MARK: - 目标温度闭环控制（app 内闭环，零权限弹窗）
 
-    /// 当前生效的目标温度（nil = 未启用，系统自动控制）
+    /// 当前生效的工作模式（UI 高亮 & 状态展示的唯一依据）。
+    @Published private(set) var mode: FanMode = .auto
+
+    /// 当前生效的目标温度（nil = 未启用，系统自动控制）。
     @Published private(set) var currentTargetTemp: Int?
 
-    /// 设定目标温度：把「目标温度→风扇」曲线写入 config.toml 并激活。
-    /// daemon 会按该温度每秒自动调速，把温度压回设定值（系统级持续，app 退出也生效）。
-    func applyTargetTemp(_ t: Int) async throws {
-        let bin = try resolvedBin()
-        let curveName = "target-\(t)"
+    /// 闭环用状态：上一周期写入的转速，用于步进限制与降速平滑。
+    private var lastFanRPM: Int = 0
 
-        // 1. 生成完整新 config：基于现有 config，剔除旧的 target-* 曲线，复用其它段
-        let existing = await promptAdminOutput("cat /etc/smctl/config.toml") ?? ""
-        let newConfig = ConfigBuilder.builtConfig(existing: existing,
-                                                  curveName: curveName,
-                                                  points: targetCurvePoints(target: t))
+    /// 目标温控的采样周期（秒）。
+    private static let controlInterval: TimeInterval = 1.5
 
-        // 2. 写临时文件（用户可写）
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("smctl-config-\(UUID().uuidString).toml")
-        try newConfig.write(to: tempURL, atomically: true, encoding: .utf8)
+    /// 闭环控制 Task（nil = 未启用）。
+    private var controlTask: Task<Void, Never>?
 
-        // 3. 用 admin 权限：确保目录 → 覆盖写 config → 重启 daemon 重载
-        _ = try await promptAdmin("mkdir -p /etc/smctl")
-        _ = try await promptAdmin("cp \"\(tempURL.path)\" /etc/smctl/config.toml")
-        try? FileManager.default.removeItem(at: tempURL)
-        _ = try await promptAdmin("\(bin) daemon restart")
+    /// 设定目标温度。
+    ///
+    /// 完全由 app 内部跑闭环：每 `controlInterval` 读一次热点温度，按滞回控制器算出
+    /// 目标转速，经 `smctl fan set`（XPC 免 root、不写 /etc、不重启 daemon）应用。
+    /// 因此全程不弹密码框；代价是控温仅在 app 存活期间生效，退出即还原 auto
+    /// （已在 `stop` 上交还，避免把风扇冻在高转速）。
+    func applyTargetTemp(_ t: Int) {
+        let target = t
+        stopTargetControlLoop()   // 取消旧的闭环（若正在运行），直接起步，不走 revertToAuto
+        currentTargetTemp = target
+        mode = .target(target)
+        lastFanRPM = 0
 
-        // 4. 激活曲线（该命令落盘 + 立即生效）
-        _ = try await promptAdmin("\(bin) fan profile \(curveName)")
-
-        await MainActor.run { currentTargetTemp = t }
+        controlTask = Task(priority: .userInitiated) { [weak self] in
+            while !Task.isCancelled {
+                await self?.controlTick(target: target)
+                try? await Task.sleep(nanoseconds: UInt64(Self.controlInterval * 1_000_000_000))
+            }
+        }
     }
 
-    /// 交还系统自动控制。
-    func revertTargetTemp() async throws {
-        let bin = try resolvedBin()
-        _ = try await promptAdmin("\(bin) fan profile auto")
-        await MainActor.run { currentTargetTemp = nil }
+    /// 停掉并交还系统自动控制。
+    func revertTargetTemp() {
+        stopTargetControlLoop()
+        mode = .auto
+        Task {
+            // 交还 auto，避免退出时把风扇冻在高转速；失败不致命，尽力而为。
+            try? await self.revertToAuto()
+        }
     }
 
-    /// 生成「目标温度→风扇」曲线的 points。
-    /// 在目标温度附近用陡段提前干预，确保压住温升；最高点压向护栏(108°C)前。
-    private func targetCurvePoints(target: Int) -> String {
-        // 注意 TOML 数字必须浮点格式（smctl issue #9：整数会解析失败）
-        // 温度升到 target 偏下就开始拉转速，target 附近陡升，超过 target 逼近 max
-        let lo = target - 10
-        let mid = target - 3
-        let upper = min(target + 8, 105)
-        return "[[50, 1200.0], [\(lo), 1500.0], [\(mid), 3200.0], [\(target), 4300.0], [\(upper), 5400.0], [108, \"max\"]]"
+    /// 取消闭环 Task 并清空相关状态（须在主线程调用）。
+    private func stopTargetControlLoop() {
+        controlTask?.cancel()
+        controlTask = nil
+        currentTargetTemp = nil
+        lastFanRPM = 0
     }
 
-    // MARK: - AppleScript 管理员授权
+    /// 单个控制周期：读温度 → 算目标转速 → 应用（限制步进）。
+    private func controlTick(target: Int) async {
+        // snapshot 由主线程写入，读操作 hop 到主线程，避免并发数据竞争。
+        let hot = await MainActor.run { Int(self.snapshot?.effectiveTemp.rounded() ?? 999) }
+        let maxRPM = await MainActor.run { Int(self.snapshot?.fans.first?.maximumRPM ?? 0) }
+        if maxRPM <= 0 { return }
 
-    /// 通过 osascript 以管理员权限执行一条命令（弹一次性系统密码框）。
+        let rpm = targetRPM(hot: hot, target: target, maxRPM: maxRPM)
+        // 步进限制：每周期最多变更 1200 RPM，防止转速陡变/闸蜂。
+        let delta = rpm - lastFanRPM
+        let bounded = lastFanRPM + max(-1200, min(1200, delta))
+        guard bounded != lastFanRPM else { return }          // 转速不变就不写
+        lastFanRPM = bounded
+        do {
+            try await setFanSpeed(bounded)
+        } catch {
+            // 写失败静默，等下一周期重试；由 UI 的最近错误反馈可见。
+        }
+    }
+
+    /// 滞回温度控制器 → 目标转速（RPM）。
+    ///
+    /// 输入为「表面体感」温度（`effectiveTemp`，与主展示/控温档位同量纲）。
+    /// - 表面比目标高 ≥2°C：比例拉升，Δ 越大越逼近 max（Δ=6°C 封顶约 85% span）。
+    /// - 表面已被压到目标以下：比例回落回基线(1200)，增益 0.33 防骤降。
+    /// - 过热硬护栏：表面 ≥70°C（≈ die 90°C+）直接压向 max，覆盖一切目标，绝不留砖。
+    private func targetRPM(hot: Int, target: Int, maxRPM: Int) -> Int {
+        let base = 1200
+        let riseAbove = hot - target                  // >0 过烫
+        let dropBelow = target - hot                  // >0 已凉
+
+        if hot >= 70 { return maxRPM }                // 硬护栏（表面 70°≈die 90+）
+        if dropBelow >= 2 {                           // 已压低，比例回落
+            let ramp = Int(Double(dropBelow) * 0.33 * Double(maxRPM) / 10.0)
+            return max(base, min(maxRPM, lastFanRPM - ramp))
+        }
+        if riseAbove > 0 {                            // 过烫，比例拉升
+            let span = Double(maxRPM - base)
+            let frac = min(0.85, Double(riseAbove) * 0.85 / 6.0)  // Δ=6°C→0.85 span
+            return base + Int(span * frac)
+        }
+        // 滞回带（±1°C）内维持当前转速，不动作防抖动。
+        return lastFanRPM == 0 ? base : lastFanRPM
+    }
+
+    // MARK: - AppleScript 管理员授权（仅安装 daemon 用）
+
+    /// 通过 osascript 以管理员权限执行一条命令（弹一次性系统密码框）。仅首次安装 daemon 时调用。
     private func promptAdmin(_ command: String) async throws -> Bool {
         let escaped = command
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -196,20 +271,6 @@ final class FanService: ObservableObject {
         let script = "do shell script \"\(escaped)\" with administrator privileges"
         let result = try await execAsync(path: "/usr/bin/osascript", args: ["-e", script])
         return result.terminatedCleanly
-    }
-
-    /// promptAdmin 的变体：额外捕获 stdout（如 `cat` 命令的结果）。失败返回 nil。
-    private func promptAdminOutput(_ command: String) async -> String? {
-        do {
-            let escaped = command
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-            let script = "do shell script \"\(escaped)\" with administrator privileges"
-            let result = try await execAsync(path: "/usr/bin/osascript", args: ["-e", script])
-            return result.terminatedCleanly ? result.stdout : nil
-        } catch {
-            return nil
-        }
     }
 
     // MARK: - 底层执行
@@ -274,70 +335,3 @@ final class FanService: ObservableObject {
     }
 }
 
-/// 重建 /etc/smctl/config.toml：在保持其它配置段不变的前提下，
-/// 移除旧的 target-* 曲线并写入新曲线。用逐行/顶层段解析，避免复杂正则出错。
-enum ConfigBuilder {
-    /// 本机 CPU 热点 key（实测），作曲线输入。daemon 取这组里的最高温度。
-    private static let sensorKeys = ["Tp0E", "Tp02", "Tp06", "Tp0M"]
-
-    static func builtConfig(existing: String, curveName: String, points: String) -> String {
-        // 1. 按顶层 section 切块：[fan]、[[fan.curves]、[safety] 由我们重建，其余原样保留
-        var keepLines: [String] = []
-        var inFan = false
-        var inCurveOrSafety = false
-
-        let lines = existing.components(separatedBy: "\n")
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("[[fan.curves]]") {
-                inCurveOrSafety = true
-                continue                       // 跳过所有旧曲线
-            } else if trimmed.hasPrefix("[fan]") {
-                inFan = true
-                inCurveOrSafety = false
-                continue                       // [fan] 段整体重建，跳过
-            } else if trimmed.hasPrefix("[safety]") {
-                inCurveOrSafety = true
-                continue                       // safety 段我们也重建，跳过旧的
-            } else if trimmed.hasPrefix("[") {
-                // 其它顶层段（battery / update / sentry ...）正常保留
-                inFan = false
-                inCurveOrSafety = false
-                keepLines.append(line)
-                continue
-            }
-            // 在 fan/curve/safety 块内的行全部丢弃（整段重建）
-            if inFan || inCurveOrSafety { continue }
-            keepLines.append(line)
-        }
-
-        let existingConfig = keepLines.joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // 2. 组装新 config
-        let curve = """
-        [fan]
-        profile = "auto"
-
-        [[fan.curves]]
-        name = "\(curveName)"
-        sensors = \(tomlArray(sensorKeys))
-        points = \(points)
-        hysteresis = 3.0
-        slew_rate = 600.0
-        fall_slew_rate = 300.0
-
-        [safety]
-        temp_ceiling = 100.0
-        allow_below_minimum = false
-        """
-
-        return existingConfig.isEmpty
-            ? curve
-            : existingConfig + "\n\n" + curve
-    }
-
-    private static func tomlArray(_ items: [String]) -> String {
-        "[" + items.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
-    }
-}
