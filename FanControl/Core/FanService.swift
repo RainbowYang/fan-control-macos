@@ -238,23 +238,23 @@ final class FanService: ObservableObject {
 
     /// 滞回温度控制器 → 目标转速（RPM）。
     ///
-    /// 输入为「表面体感」温度（`effectiveTemp`，与主展示/控温档位同量纲）。
-    /// - 表面比目标高 ≥2°C：比例拉升，Δ 越大越逼近 max（Δ=6°C 封顶约 85% span）。
-    /// - 表面已被压到目标以下：比例回落回基线(1200)，增益 0.33 防骤降。
-    /// - 过热硬护栏：表面 ≥70°C（≈ die 90°C+）直接压向 max，覆盖一切目标，绝不留砖。
+    /// 输入为「掌托体感」温度（`effectiveTemp`，与主展示/控温档位同量纲）。
+    /// - 掌托比目标高 ≥2°C：比例拉升，Δ 越大越逼近 max（Δ=8°C 封顶约 85% span）。
+    /// - 掌托已被压到目标以下：比例回落回基线(1200)，增益 0.33 防骤降。
+    /// - 过热硬护栏：掌托 ≥50°C（手感已明显烫手，远超正常 30-40°C 区间）直接压向 max，绝不留砖。
     private func targetRPM(hot: Int, target: Int, maxRPM: Int) -> Int {
         let base = 1200
         let riseAbove = hot - target                  // >0 过烫
         let dropBelow = target - hot                  // >0 已凉
 
-        if hot >= 70 { return maxRPM }                // 硬护栏（表面 70°≈die 90+）
+        if hot >= 50 { return maxRPM }                // 硬护栏（掌托已烫手）
         if dropBelow >= 2 {                           // 已压低，比例回落
             let ramp = Int(Double(dropBelow) * 0.33 * Double(maxRPM) / 10.0)
             return max(base, min(maxRPM, lastFanRPM - ramp))
         }
         if riseAbove > 0 {                            // 过烫，比例拉升
             let span = Double(maxRPM - base)
-            let frac = min(0.85, Double(riseAbove) * 0.85 / 6.0)  // Δ=6°C→0.85 span
+            let frac = min(0.85, Double(riseAbove) * 0.85 / 8.0)  // Δ=8°C→0.85 span
             return base + Int(span * frac)
         }
         // 滞回带（±1°C）内维持当前转速，不动作防抖动。

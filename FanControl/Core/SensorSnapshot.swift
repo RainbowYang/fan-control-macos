@@ -49,37 +49,34 @@ struct SensorSnapshot: Codable {
         temperatures.filter { $0.key.hasPrefix(prefix) }.map(\.celsius).max()
     }
 
-    /// CPU 硅片最高热点（Tp*）：真实 CPU 核心温度，散热/过热监控用，但非人摸到的表面。
+    /// CPU 硅片最高热点（Tp*）：真实 CPU 核心温度，散热/过热监控用，但非人碰到的表面。
     var cpuDieTemp: Double? { hottest(inGroup: "Tp") }
-
-    /// 表面温度群（Ts*）：芯片附近封装表面，最接近「摸得到的外壳暖感」。
-    var surfaceTemp: Double? { hottest(inGroup: "Ts") }
-
-    /// 板面温度群（TC*）：板载热耦合点，贴近机身外壳。
-    var boardTemp: Double? { hottest(inGroup: "TC") }
 
     /// GPU / 图形组（Tg*）。
     var gpuTemp: Double? { hottest(inGroup: "Tg") }
 
-    /// 品牌"即时表面"探点（Ts0P）：部分机型直接暴露人体可感的表面温度。
-    var immediateSurfaceTemp: Double? {
+    /// 左掌托温度（Ts0P）：键盘下方、触控板旁，打字时手腕搁的位置。
+    var palmRestLeft: Double? {
         temperatures.first { $0.key == "Ts0P" }?.celsius
     }
 
-    /// 主温度（菜单栏大字 + 控温闭环输入）：采用「体感」—表面温度群最高值。
-    ///
-    /// 说明：人摸键盘/触控板感受到的是封装表面与外壳温度，而非 CPU 硅片 die
-    /// （die 常比表面高 ~20°C）。本 app 主展示与控温统一锚定表面温度，让
-    /// 「目标温度」就是「摸上去热不热」，不需要脑补换算。想查看真实 CPU 硅片
-    /// 温度见 `cpuDieTemp`。
-    var effectiveTemp: Double {
-        surfaceTemp ?? immediateSurfaceTemp ?? hottestOverall ?? 0
+    /// 右掌托温度（Ts1P）。
+    var palmRestRight: Double? {
+        temperatures.first { $0.key == "Ts1P" }?.celsius
     }
 
-    /// 平均温度（视觉中线）
-    var averageTemp: Double {
-        guard !temperatures.isEmpty else { return 0 }
-        return temperatures.map(\.celsius).reduce(0, +) / Double(temperatures.count)
+    /// 掌托温度（用户实际会碰到的体感）：取左右掌托较高者。
+    var palmRestTemp: Double? {
+        (palmRestLeft ?? palmRestRight ?? hottest(inGroup: "Ts"))
+    }
+
+    /// 主温度（菜单栏大字 + 控温闭环输入）：掌托温度。
+    ///
+    /// 用户只关心「手碰到的部位热不热」，主温度与控温统一锚定掌托温度
+    /// （Ts0P/Ts1P —— 苹果专为手腕搁点提供的探点），让「目标温度」就是
+    /// 「摸上去热不热」的体感值，无需脑补换算。真实 CPU 硅片温度见 `cpuDieTemp`。
+    var effectiveTemp: Double {
+        palmRestTemp ?? hottestOverall ?? 0
     }
 
     var totalPower: Double? {
