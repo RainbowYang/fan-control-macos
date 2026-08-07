@@ -4,7 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var service: FanService
     @State private var feedbackMessage: String?
-    @State private var targetTemp: Double = 55
+    @State private var targetTemp: Double = 32
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -27,32 +27,34 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - 顶部：温度 + 安装状态
+    // MARK: - 顶部：主温度 + 功耗 + 安装状态
 
     private var header: some View {
-        HStack {
+        HStack(alignment: .center) {
             if let snapshot = service.snapshot {
                 Text("\(Int(snapshot.effectiveTemp.rounded()))°C")
                     .font(.system(size: 28, weight: .bold))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("热点最高") .font(.caption).foregroundStyle(.secondary)
-                    if let pwr = snapshot.totalPower {
-                        Text(String(format: "功耗 %.1f W", pwr))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    .monospacedDigit()
+                Spacer()
+                if !service.daemonRunning {
+                    Button("装服务") { installDaemon() }
+                        .font(.caption)
+                }
+                if let pwr = snapshot.totalPower {
+                    Text(String(format: "%.0fW", pwr))
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
             } else if service.isInstalled {
+                Spacer()
                 ProgressView().controlSize(.small)
                 Text("读取中…").font(.caption).foregroundStyle(.secondary)
             } else {
+                Spacer()
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 Text("smctl 未就绪").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !service.daemonRunning {
-                Button("装服务") { installDaemon() }
-                    .font(.caption)
             }
         }
     }
@@ -61,44 +63,32 @@ struct MenuBarView: View {
 
     private var tempsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("温度").font(.headline)
-                Spacer()
-                Text("主温度=表面体感").font(.caption2).foregroundStyle(.secondary)
-            }
+            Text("温度").font(.headline)
             if let snapshot = service.snapshot {
-                // 主温度大字已在顶部 header 显示；这里罗列不同位置的温度。
-                if let cpu = snapshot.cpuDieTemp {
-                    tempRow(label: "CPU 硅片", value: cpu, hint: "真实核心温度")
+                // 左右掌托同一行展示。
+                HStack {
+                    Text("掌托").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if let l = snapshot.palmRestLeft {
+                        Text("左 \(Int(l.rounded()))°").font(.callout.monospacedDigit())
+                    }
+                    if let r = snapshot.palmRestRight {
+                        Text("右 \(Int(r.rounded()))°").font(.callout.monospacedDigit())
+                    }
                 }
-                if let surf = snapshot.surfaceTemp {
-                    tempRow(label: "表面(体感)", value: surf)
-                }
-                if let board = snapshot.boardTemp {
-                    tempRow(label: "板面", value: board)
-                }
-                if let gpu = snapshot.gpuTemp {
-                    tempRow(label: "GPU", value: gpu)
-                }
-                if snapshot.temperatures.count > 0 {
-                    tempRow(label: "平均", value: snapshot.averageTemp, format: true)
+                // CPU、GPU 同一行展示。
+                HStack {
+                    Text("内部").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if let cpu = snapshot.cpuDieTemp {
+                        Text("CPU \(Int(cpu.rounded()))°").font(.callout.monospacedDigit())
+                    }
+                    if let gpu = snapshot.gpuTemp {
+                        Text("GPU \(Int(gpu.rounded()))°").font(.callout.monospacedDigit())
+                    }
                 }
             } else {
                 Text("无数据").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func tempRow(label: String, value: Double?, format: Bool = false, hint: String? = nil) -> some View {
-        HStack {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            if let hint {
-                Text(hint).font(.caption2).foregroundStyle(.tertiary)
-            }
-            Spacer()
-            if let value {
-                Text(format ? String(format: "%.1f°C", value) : "\(Int(value.rounded()))°C")
-                    .font(.callout.monospacedDigit())
             }
         }
     }
@@ -190,8 +180,8 @@ struct MenuBarView: View {
                 Text("\(Int(targetTemp))°C")
                     .font(.callout.monospacedDigit())
                     .frame(width: 44, alignment: .leading)
-                Slider(value: $targetTemp, in: 45...65, step: 1)
-                    .onChange(of: targetTemp) { newValue in
+                Slider(value: $targetTemp, in: 25...45, step: 1)
+                    .onChange(of: targetTemp) { _, newValue in
                         // 拖动即启用/更新控温，无需确认按钮。
                         service.applyTargetTemp(Int(newValue))
                     }
@@ -205,8 +195,11 @@ struct MenuBarView: View {
         isActive: Bool,
         action: @escaping () async throws -> Void
     ) -> some View {
-        let fg: Color = isActive ? .accentColor : .primary
-        let bg: Color = isActive ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.05)
+        // 选中态用实心不透明 accent 填充 + 白字，避免被面板毛玻璃背景透色稀释。
+        // 未选中保持半透明浅灰，刻意低调。
+        let fg: Color = isActive ? .white : .primary
+        let bg: Color = isActive ? Color.accentColor : Color.primary.opacity(0.06)
+        let weight: Font.Weight = isActive ? .semibold : .regular
 
         return Button {
             Task {
@@ -220,8 +213,9 @@ struct MenuBarView: View {
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: icon)
+                    .fontWeight(isActive ? .bold : .regular)
                     .foregroundStyle(fg)
-                Text(label).font(.caption)
+                Text(label).font(.caption).fontWeight(weight)
                     .foregroundStyle(fg)
             }
             .frame(maxWidth: .infinity)
