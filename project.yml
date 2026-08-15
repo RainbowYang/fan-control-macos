@@ -1,4 +1,6 @@
 name: FanControl
+# 注意：请用 scripts/bootstrap-project.sh 生成工程（会修正 objectVersion 为 60，
+# 兼容 CI 的 Xcode 15.4；XcodeGen 2.45 目前仍硬编码输出 77）。
 options:
   bundleIdPrefix: local.fancontrol
   deploymentTarget:
