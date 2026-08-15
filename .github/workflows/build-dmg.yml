@@ -1,0 +1,63 @@
+name: Build DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download smctl/smctld binaries
+        env:
+          SMCTL_VERSION: "0.2.2"
+        run: |
+          set -euo pipefail
+          mkdir -p vendor/smctl
+          curl -fsSL \
+            "https://github.com/leaperone/smctl/releases/download/v${SMCTL_VERSION}/smctl-${SMCTL_VERSION}-arm64.zip" \
+            -o /tmp/smctl.zip
+          unzip -o -j /tmp/smctl.zip \
+            "smctl-${SMCTL_VERSION}-arm64/smctl" \
+            "smctl-${SMCTL_VERSION}-arm64/smctld" \
+            -d vendor/smctl
+          chmod +x vendor/smctl/smctl vendor/smctl/smctld
+          file vendor/smctl/smctl vendor/smctl/smctld
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build Release
+        run: |
+          xcodebuild -project FanControl.xcodeproj \
+            -scheme FanControl -configuration Release \
+            -derivedDataPath .build build
+
+      - name: Package DMG
+        run: ./scripts/make-dmg.sh
+
+      - name: Upload DMG artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FanControl-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true
+          fail_on_unmatched_files: true
