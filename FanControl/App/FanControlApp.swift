@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 /// App 生命周期钩子：
@@ -11,6 +12,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         FanService.shared.shutdown()
+    }
+}
+
+/// 独立设置窗口控制器：用原生 NSWindow + NSHostingController 承载设置界面。
+/// 不依赖 SwiftUI Settings scene / SettingsLink，也不依赖 NSApp.delegate 链路。
+@MainActor
+final class SettingsWindowController {
+    static let shared = SettingsWindowController()
+    private static let logger = Logger(subsystem: "local.fancontrol.app", category: "settings-window")
+
+    private var windowController: NSWindowController?
+
+    func show() {
+        Self.logger.notice("show() called")
+
+        if let windowController, let window = windowController.window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            Self.logger.notice("re-show existing window: \(window.isVisible, privacy: .public)")
+            return
+        }
+
+        let rootView = SettingsView().environmentObject(FanService.shared)
+        let hostingController = NSHostingController(rootView: rootView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 420),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "FanControl 设置"
+        window.contentViewController = hostingController
+        window.isReleasedWhenClosed = false
+        window.center()
+
+        let controller = NSWindowController(window: window)
+        windowController = controller
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        Self.logger.notice("created and showing window: \(window.isVisible, privacy: .public)")
     }
 }
 
@@ -31,11 +72,6 @@ struct FanControlApp: App {
             MenuBarIcon(snapshot: service.snapshot)
         }
         .menuBarExtraStyle(.window)
-
-        Settings {
-            SettingsView()
-                .environmentObject(service)
-        }
     }
 }
 
