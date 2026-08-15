@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// 菜单栏下拉面板：温度、风扇、转速控制
@@ -15,15 +16,28 @@ struct MenuBarView: View {
             fansSection
             Divider()
             controlsSection
+            Divider()
+            quitRow
         }
         .padding(14)
         .frame(width: 300)
         .onAppear {
-            service.startPolling()
-            Task { _ = await service.checkDaemon() }   // 启动时刷新 daemon 状态
+            // 轮询已由 App 生命周期常驻运行，这里只需在每次打开面板时刷新 daemon 状态。
+            Task { _ = await service.checkDaemon() }
         }
-        .onDisappear {
-            service.stopPolling()
+    }
+
+    /// 显式退出入口：走正常的 NSApplication.terminate，
+    /// AppDelegate 会在退出前交还系统自动控制，避免风扇停在手动高转速。
+    private var quitRow: some View {
+        HStack {
+            Spacer()
+            Button("退出 FanControl") {
+                NSApp.terminate(nil)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
         }
     }
 
