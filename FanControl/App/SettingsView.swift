@@ -1,24 +1,12 @@
 import SwiftUI
 
-/// 历史曲线展示的指标。存 AppStorage 用 rawValue。
-enum HistoryMetric: String, CaseIterable, Identifiable {
-    case temperature
-    case fanRPM
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .temperature: return "温度"
-        case .fanRPM: return "风扇转速"
-        }
-    }
-}
-
 /// 独立设置面板：开机自启 + 历史曲线选项 + 关于。
 struct SettingsView: View {
     @EnvironmentObject private var service: FanService
-    @AppStorage("historyMetric") private var historyMetricRaw = HistoryMetric.temperature.rawValue
+    @AppStorage("historyTemperatureEnabled") private var historyTemperatureEnabled = true
+    @AppStorage("historyFanEnabled") private var historyFanEnabled = false
+    @AppStorage("showTemperatureSection") private var showTemperatureSection = true
+    @AppStorage("showFansSection") private var showFansSection = true
 
     var body: some View {
         Form {
@@ -36,13 +24,13 @@ struct SettingsView: View {
             }
 
             Section("菜单栏面板") {
-                Picker("历史曲线", selection: $historyMetricRaw) {
-                    ForEach(HistoryMetric.allCases) { metric in
-                        Text(metric.displayName).tag(metric.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                Toggle("温度面板", isOn: $showTemperatureSection)
+                Toggle("风扇面板", isOn: $showFansSection)
+            }
+
+            Section("菜单栏历史曲线") {
+                Toggle("温度曲线", isOn: $historyTemperatureEnabled)
+                Toggle("风扇转速曲线", isOn: $historyFanEnabled)
             }
 
             Section("关于") {
@@ -53,6 +41,11 @@ struct SettingsView: View {
                 LabeledContent("底层") {
                     Text("smctl \(smctlVersion)")
                         .foregroundStyle(.secondary)
+                }
+                LabeledContent("项目") {
+                    Link("github.com/RainbowYang/fan-control-macos",
+                         destination: URL(string: "https://github.com/RainbowYang/fan-control-macos")!)
+                        .foregroundStyle(.tint)
                 }
             }
         }
