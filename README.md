@@ -51,6 +51,15 @@ vendor/smctl/smctld
 ```
 生成 `dist/FanControl-<版本>-arm64.dmg`。产物未签名/公证，分发后用户需「右键 → 打开」绕过 Gatekeeper。
 
+也可以直接交给 CI 打包（GitHub Actions 的 macOS runner 自带可用 hdiutil，避免本机环境限制）：
+
+```bash
+# 手动触发一次构建，完成后从 Actions 的 artifact 下载 DMG
+gh workflow run "Build DMG"
+```
+
+推送 `v*` tag 会自动构建 DMG 并创建 GitHub Release（`.github/workflows/build-dmg.yml`）。
+
 ## 许可证
 - 本项目：**MIT**（见 [LICENSE](LICENSE)），Copyright © 2026 RainbowYang
 - 底层 [smctl](https://github.com/leaperone/smctl)（含 smctld）同为 **MIT**，版权归其原作者。`vendor/smctl/LICENSE` 保留其完整许可声明。
