@@ -14,7 +14,7 @@ macOS 原生菜单栏 App（SwiftUI），基于 [smctl](https://github.com/leape
 ## 构建
 ```bash
 brew install xcodegen
-xcodegen generate
+./scripts/bootstrap-project.sh   # xcodegen generate + 修正 objectVersion 兼容性
 xcodebuild -project FanControl.xcodeproj -scheme FanControl -configuration Debug -derivedDataPath .build build
 ```
 
