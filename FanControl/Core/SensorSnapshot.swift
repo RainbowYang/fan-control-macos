@@ -5,11 +5,6 @@ struct SensorReading: Codable {
     let key: String
     let celsius: Double
     let group: String?
-
-    /// 是否是热点/快速响应的传感器（Tp* 前缀或苹果 TC 组）
-    var isHotspot: Bool {
-        key.hasPrefix("Tp")
-    }
 }
 
 /// 单个风扇状态

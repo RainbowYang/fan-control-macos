@@ -1,15 +1,15 @@
 # FanControl — Apple Silicon 风扇控制 & 温度监控
 
 macOS 原生菜单栏 App（SwiftUI），基于 [smctl](https://github.com/leaperone/smctl)（MIT）封装。
-在 Apple Silicon（M1/M2/M3/M4/M5）上读取温度、控制风扇转速、编辑温度曲线。
+在 Apple Silicon（M1/M2/M3/M4/M5）上读取温度、控制风扇转速。
 
 ## 功能
-- **菜单栏实时监控**：风扇图标随温度变色，下拉面板显示热点温度/平均温度/功耗/各风扇实际与目标转速
-- **手动调速**：滑块设目标 RPM（经 daemon XPC，admin 用户即可）
-- **预设模式**：系统自动 / 静音 / 全速，一键切换
-- **温度曲线编辑器**：拖拽节点定义 温度→转速 映射，写入 `/etc/smctl/config.toml`
-- **安全护栏**：smctld 每秒监控温度，超上限自动交还系统控制（不可关闭）
-- **退出自动还原**：交还系统控制，launchd reconcile 兜底
+- **菜单栏实时监控**：App 启动即开始轮询（面板关闭也持续），风扇图标随掌托温度变色，下拉面板显示掌托/CPU/GPU 温度、整机功耗、各风扇实际与目标转速
+- **四种工作模式**：自动 / 静音 / 全速 / 控温，一键切换、当前模式高亮
+- **控温闭环**：设目标温度（25–45°C），app 内每 1.5s 读掌托温度 → 滞回控制器 → 经 daemon XPC 应用目标转速。全程**零密码弹窗**，仅在 app 运行期间生效
+- **安全护栏**：控温每周期限变速 ±1200 RPM；掌托 ≥50°C 直接全速；切走模式立即停闭环
+- **首次安装**：到「服务」页点「装服务」，输一次管理员密码安装 smctld；之后所有操作免密（admin 用户经 XPC 授权）
+- **退出自动还原**：正常退出（含面板内「退出 FanControl」按钮）前交还系统自动控制，不会把风扇冻在手动高转速
 
 ## 构建
 ```bash
@@ -18,20 +18,23 @@ xcodegen generate
 xcodebuild -project FanControl.xcodeproj -scheme FanControl -configuration Debug -derivedDataPath .build build
 ```
 
-依赖：本项目自带 `smctl`/`smctld` 预编译二进制（`vendor/smctl/`），无需另行安装。
-构建后需把 `vendor/smctl/smctl` 复制进 app bundle：
-```bash
-cp vendor/smctl/smctl vendor/smctl/smctld .build/Build/Products/Debug/FanControl.app/Contents/MacOS/
+依赖：本项目通过构建脚本自动把 `smctl`/`smctld` 复制进 app bundle。两个预编译 arm64 二进制
+**不入 git 仓库**（体积较大），构建前请从 [smctl GitHub Releases](https://github.com/leaperone/smctl/releases)
+下载后放到：
+
+```
+vendor/smctl/smctl
+vendor/smctl/smctld
 ```
 
-> ⚠️ `smctl` 和 `smctld` **必须同时**复制进 bundle。`smctl daemon install` 要求 `smctld`
+> ⚠️ `smctl` 和 `smctld` **必须同时**存在。`smctl daemon install` 要求 `smctld`
 > 与 `smctl` 同目录，漏掉 smctld 会导致安装失败（报 "Could not find smctld next to the
-> current smctl executable"）。若架构改为打包脚本，请把这两个二进制一并纳入。
+> current smctl executable"）。发布打包脚本也会校验并拷贝这两个二进制。
 
 ## 运行与首次安装
-1. 打开 app（菜单栏出现风扇图标）
-2. 到「服务」页点「安装服务」，输一次管理员密码安装 smctld
-3. 之后手动调速、预设、曲线均免密（admin 用户经 XPC 授权）
+1. 打开 app（菜单栏出现风扇图标，随后显示掌托温度）
+2. 到面板底部点「装服务」，输一次管理员密码安装 smctld
+3. 之后手动调速、预设、控温均免密（admin 用户经 XPC 授权）
 
 > 说明：传感器读取无需 root；写操作由 smctld（root daemon）执行。daemon 依赖一次性的
 > 管理员授权，这与 smctl 官方设计一致（不写 sudoers、信任边界在 root daemon + XPC）。
@@ -39,7 +42,14 @@ cp vendor/smctl/smctl vendor/smctl/smctld .build/Build/Products/Debug/FanControl
 ## 技术路线
 - **CLI 中转**：SwiftUI app 通过 `Process` 调用 `smctl` CLI 二进制 → XPC → smctld → AppleSMC
   - 绕过 smctl XPC 的 Team ID 签名鉴权约束（无 Apple Developer 账号也能用）
+- **串行写队列**：所有风扇写命令（切模式、控温写入）经同一串行队列执行，并带「执行前模式复核」，杜绝退出/切模式与控温闭环的写竞态
 - 详见 `ROUTE.md`
+
+## 打包发布
+```bash
+./scripts/make-dmg.sh
+```
+生成 `dist/FanControl-<版本>-arm64.dmg`。产物未签名/公证，分发后用户需「右键 → 打开」绕过 Gatekeeper。
 
 ## 许可证
 - 本项目：**MIT**（见 [LICENSE](LICENSE)），Copyright © 2026 RainbowYang

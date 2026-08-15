@@ -1,8 +1,27 @@
+import AppKit
 import SwiftUI
+
+/// App 生命周期钩子：
+/// - 启动时开始传感器轮询（保证面板关闭时菜单栏图标仍实时更新）
+/// - 退出前同步交还系统自动控制，避免风扇停在手动高转速
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        FanService.shared.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        FanService.shared.shutdown()
+    }
+}
 
 @main
 struct FanControlApp: App {
-    @StateObject private var service = FanService()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var service: FanService
+
+    init() {
+        _service = StateObject(wrappedValue: FanService.shared)
+    }
 
     var body: some Scene {
         MenuBarExtra {

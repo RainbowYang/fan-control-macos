@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MARKETING_VERSION: "0.3.0"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "0.3.1"
+    CURRENT_PROJECT_VERSION: "4"
     CODE_SIGN_IDENTITY: "-"            # adhoc 自签，无开发者账号
     CODE_SIGNING_REQUIRED: NO
     ENABLE_HARDENED_RUNTIME: NO
@@ -18,6 +18,19 @@ targets:
     platform: macOS
     sources:
       - path: FanControl
+    postBuildScripts:
+      - name: Embed smctl binaries
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          SRC="$SRCROOT/vendor/smctl"
+          DST="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH"
+          # smctl daemon install 要求 smctld 与 smctl 同目录，必须一起拷
+          if [ -x "$SRC/smctl" ] && [ -x "$SRC/smctld" ]; then
+            cp -f "$SRC/smctl" "$SRC/smctld" "$DST/"
+          else
+            echo "warning: 未找到 vendor/smctl/{smctl,smctld}，app 将无法工作。请从 smctl GitHub Releases 下载 arm64 二进制后重试。"
+          fi
     settings:
       base:
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
