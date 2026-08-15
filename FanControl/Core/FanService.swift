@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 
 /// 风扇当前的四种互斥工作模式，UI 高亮与状态显示的唯一依据。
 enum FanMode: Equatable {
@@ -65,6 +66,25 @@ final class FanService: ObservableObject {
     /// 当前生效的目标温度（nil = 未启用，系统自动控制）。
     @Published private(set) var currentTargetTemp: Int?
 
+    /// 历史采样（最多保留约 15 分钟：1.5s × 600）。
+    @Published private(set) var history: [HistoryPoint] = []
+
+    /// 是否已注册「登录时打开」（SMAppService.mainApp）。
+    @Published private(set) var launchAtLogin = false
+
+    /// 修改开机自启失败时的错误说明（供设置面板展示）。
+    @Published private(set) var launchAtLoginError: String?
+
+    /// 单个历史采样点：掌托温度 + 最高风扇实际转速。
+    struct HistoryPoint: Identifiable {
+        let id = UUID()
+        let date: Date
+        let temperature: Double
+        let rpm: Double
+    }
+
+    private static let historyLimit = 600   // 约 15 分钟（1.5s 采样）
+
     private var fetchTask: Task<Void, Never>?
 
     // MARK: - 控制状态（NSLock 保护，后台控制循环与主线程 UI 均可安全访问）
@@ -83,8 +103,31 @@ final class FanService: ObservableObject {
     /// App 启动后调用：开始传感器轮询并探测 daemon。
     /// 轮询挂在 App 生命周期（而非下拉面板 onAppear），面板关闭时菜单栏图标依旧实时更新。
     func start() {
+        refreshLaunchAtLogin()
         startPolling()
         Task { _ = await checkDaemon() }
+    }
+
+    // MARK: - 开机自启（Login Item）
+
+    /// 读取当前「登录时打开」状态。
+    func refreshLaunchAtLogin() {
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// 注册/注销登录项。失败时保留错误信息给设置面板展示。
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginError = nil
+        } catch {
+            launchAtLoginError = error.localizedDescription
+        }
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     /// 退出前调用：停掉控温闭环并同步交还系统自动控制。
@@ -111,8 +154,14 @@ final class FanService: ObservableObject {
                 throw FanServiceError.exitCode(-1, "无法将 smctl 输出编码为 UTF-8")
             }
             let snap = try SensorSnapshot.parse(data)
+            let rpm = snap.fans.map(\.actualRPM).max() ?? 0
+            let point = HistoryPoint(date: Date(), temperature: snap.effectiveTemp, rpm: rpm)
             await MainActor.run {
                 snapshot = snap
+                history.append(point)
+                if history.count > Self.historyLimit {
+                    history.removeFirst(history.count - Self.historyLimit)
+                }
                 lastError = nil
             }
         } catch {

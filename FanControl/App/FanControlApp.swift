@@ -31,6 +31,11 @@ struct FanControlApp: App {
             MenuBarIcon(snapshot: service.snapshot)
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environmentObject(service)
+        }
     }
 }
 

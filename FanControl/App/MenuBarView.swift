@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import SwiftUI
 
 /// 菜单栏下拉面板：温度、风扇、转速控制
@@ -6,6 +7,11 @@ struct MenuBarView: View {
     @EnvironmentObject private var service: FanService
     @State private var feedbackMessage: String?
     @State private var targetTemp: Double = 32
+    @AppStorage("historyMetric") private var historyMetricRaw = HistoryMetric.temperature.rawValue
+
+    private var historyMetric: HistoryMetric {
+        HistoryMetric(rawValue: historyMetricRaw) ?? .temperature
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -13,11 +19,13 @@ struct MenuBarView: View {
             Divider()
             tempsSection
             Divider()
+            historySection
+            Divider()
             fansSection
             Divider()
             controlsSection
             Divider()
-            quitRow
+            footerRow
         }
         .padding(14)
         .frame(width: 300)
@@ -27,10 +35,15 @@ struct MenuBarView: View {
         }
     }
 
-    /// 显式退出入口：走正常的 NSApplication.terminate，
-    /// AppDelegate 会在退出前交还系统自动控制，避免风扇停在手动高转速。
-    private var quitRow: some View {
+    /// 底部：打开设置 / 显式退出（退出会经 AppDelegate 交还系统自动控制）。
+    private var footerRow: some View {
         HStack {
+            SettingsLink {
+                Label("设置", systemImage: "gearshape")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
             Spacer()
             Button("退出 FanControl") {
                 NSApp.terminate(nil)
@@ -103,6 +116,101 @@ struct MenuBarView: View {
                 }
             } else {
                 Text("无数据").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - 历史曲线
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("历史").font(.headline)
+                Spacer()
+                Text(historyMetric.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if service.history.count >= 2 {
+                historyChart
+                    .frame(height: 72)
+            } else {
+                Text("收集数据中…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var historyChart: some View {
+        if historyMetric == .temperature {
+            Chart(service.history) { point in
+                AreaMark(
+                    x: .value("时间", point.date),
+                    y: .value("温度", point.temperature)
+                )
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color.orange.opacity(0.35), Color.orange.opacity(0.02)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                LineMark(
+                    x: .value("时间", point.date),
+                    y: .value("温度", point.temperature)
+                )
+                .foregroundStyle(.orange)
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+            }
+            .chartXAxis(.hidden)
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                    AxisGridLine()
+                        .foregroundStyle(Color.primary.opacity(0.08))
+                    AxisValueLabel {
+                        if let number = value.as(Double.self) {
+                            Text("\(Int(number.rounded()))°")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        } else {
+            Chart(service.history) { point in
+                AreaMark(
+                    x: .value("时间", point.date),
+                    y: .value("RPM", point.rpm)
+                )
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color.green.opacity(0.35), Color.green.opacity(0.02)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                LineMark(
+                    x: .value("时间", point.date),
+                    y: .value("RPM", point.rpm)
+                )
+                .foregroundStyle(.green)
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+            }
+            .chartXAxis(.hidden)
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                    AxisGridLine()
+                        .foregroundStyle(Color.primary.opacity(0.08))
+                    AxisValueLabel {
+                        if let number = value.as(Double.self) {
+                            Text("\(Int(number.rounded()))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
         }
     }
